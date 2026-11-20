@@ -1,2 +1,4 @@
 macos/build/
 .DS_Store
+linux/build/
+*.log

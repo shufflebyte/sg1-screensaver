@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Ägyptische Tänzer
+GenericName=Bildschirmschoner
+Comment=Bildschirmschoner aus Stargate SG-1 – beendet sich bei Taste oder Mausbewegung
+Exec=@BINDIR@/egypt-dancers --fullscreen
+Icon=egypt-dancers
+Terminal=false
+Categories=Graphics;Amusement;
+Keywords=screensaver;stargate;egypt;Bildschirmschoner;
+StartupWMClass=egypt-dancers
+Actions=window;
+
+[Desktop Action window]
+Name=Im Fenster starten
+Exec=@BINDIR@/egypt-dancers
