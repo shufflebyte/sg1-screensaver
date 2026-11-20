@@ -36,8 +36,21 @@ final class EgyptSaverView: ScreenSaverView {
         translatesAutoresizingMaskIntoConstraints = true
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
+        makeMetalView()
 
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        // Seit macOS 14 ruft das System stopAnimation nicht zuverlässig auf; alte Instanzen
+        // würden unsichtbar weiterzeichnen. Darum beim Ende selbst anhalten.
+        // Nicht mit exit(0) aussteigen: WallpaperAgent hält dann die Verbindung zum toten
+        // Prozess fest und der nächste Start bleibt schwarz.
+        if !isPreview {
+            stopObserver = DistributedNotificationCenter.default().addObserver(
+                forName: Notification.Name("com.apple.screensaver.willstop"), object: nil, queue: .main
+            ) { [weak self] _ in self?.mtkView?.isPaused = true }
+        }
+    }
+
+    private func makeMetalView() {
+        guard mtkView == nil, let device = MTLCreateSystemDefaultDevice() else { return }
         let view = MTKView(frame: bounds, device: device)
         view.autoresizingMask = [.width, .height]
         view.colorPixelFormat = .bgra8Unorm
@@ -58,15 +71,32 @@ final class EgyptSaverView: ScreenSaverView {
         addSubview(view)
         mtkView = view
         renderer = r
+        updateScale()
+    }
 
-        // Seit macOS 14 beendet das System den Bildschirmschoner-Prozess nicht zuverlässig;
-        // alte Instanzen laufen dann unsichtbar weiter. Darum beim Beenden selbst aussteigen.
-        // Nicht in der Vorschau der Systemeinstellungen.
-        if !isPreview {
-            stopObserver = DistributedNotificationCenter.default().addObserver(
-                forName: Notification.Name("com.apple.screensaver.willstop"), object: nil, queue: .main
-            ) { _ in exit(0) }
-        }
+    /// macOS gibt alte Ansichten nicht frei. Damit sich pro Start kein Speicher ansammelt,
+    /// Metal-Ansicht und Renderer beim Herausnehmen aus dem Fenster selbst wegwerfen.
+    private func dropMetalView() {
+        mtkView?.isPaused = true
+        mtkView?.delegate = nil
+        mtkView?.removeFromSuperview()
+        mtkView = nil
+        renderer = nil
+    }
+
+    /// Bildschärfe der Metal-Ebene an den Bildschirm anpassen. Wird die Ansicht in ein Fenster
+    /// mit 0x0 gehängt (passiert zufällig bei etwa jedem zweiten Start), bleibt sie sonst auf 0
+    /// und das gezeichnete Bild ist unsichtbar.
+    private func updateScale() {
+        guard let ml = mtkView?.layer else { return }
+        let scale = window?.screen?.backingScaleFactor ?? window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor ?? 2
+        if ml.contentsScale != scale { ml.contentsScale = scale }
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateScale()
     }
 
     /// Größe des Containers übernehmen und bei dessen Änderungen nachziehen.
@@ -84,14 +114,19 @@ final class EgyptSaverView: ScreenSaverView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let o = windowObserver { NotificationCenter.default.removeObserver(o); windowObserver = nil }
-        guard let w = window else { return }
+        guard let w = window else {
+            dropMetalView()
+            return
+        }
+        makeMetalView()             // falls eine schon benutzte Ansicht wiederverwendet wird
+        mtkView?.isPaused = false
         fitToSuperview()
         windowObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResizeNotification, object: w, queue: .main
         ) { [weak self] _ in self?.fitToSuperview() }
         // Beim echten Start bekommt die Ansicht ihre volle Größe teils erst später und ohne
-        // Benachrichtigung. Ohne diese Nachprüfung bleibt der Bildschirm schwarz.
-        for delay in [1.0, 3.0] {
+        // Benachrichtigung. Darum zusätzlich nachprüfen.
+        for delay in [0.25, 1.0, 3.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self, self.window != nil else { return }
                 self.fitToSuperview()
@@ -109,6 +144,7 @@ final class EgyptSaverView: ScreenSaverView {
             if c.width > target.width * 1.5 || c.height > target.height * 1.5 { target = c }
         }
         if frame != target { frame = target }
+        updateScale()
     }
 
     override func startAnimation() {
