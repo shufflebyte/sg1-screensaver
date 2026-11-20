@@ -19,6 +19,9 @@ typedef struct { P p[8]; int n; C4 c; } Shape; /* immer konvex */
 static P  pt(float x, float y) { P p = { x, y }; return p; }
 static C4 rgba(int r, int g, int b, float a) { C4 c = { r / 255.f, g / 255.f, b / 255.f, a }; return c; }
 
+#ifndef M_PI   /* glibc definiert M_PI mit -std=c11 nicht */
+#define M_PI 3.14159265358979323846
+#endif
 #define DEG ((float)(M_PI / 180.0))
 
 /* ------------------------------------------------------------------ Figur */
