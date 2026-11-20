@@ -1,0 +1,4 @@
+module EgyptCore {
+    header "egypt_core.h"
+    export *
+}

@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ägyptischer Screensaver – Prototyp</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+    font: 13px -apple-system, system-ui, sans-serif; color: #eee; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #panel { position: fixed; top: 12px; right: 12px; width: 260px;
+    background: rgba(22, 15, 11, .85); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 10px; padding: 12px 14px; transition: opacity .4s;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  #panel.hidden { opacity: 0; pointer-events: none; }
+  #panel h1 { font-size: 13px; margin: 0 0 10px; font-weight: 600; }
+  .row { display: flex; align-items: center; margin: 7px 0; gap: 8px; }
+  .row label { flex: 0 0 88px; color: #d8c8bc; }
+  .row input[type=range] { flex: 1; min-width: 0; }
+  .row select { flex: 1; min-width: 0; background: #2a201a; color: #eee;
+    border: 1px solid #554; border-radius: 5px; padding: 2px; }
+  .val { flex: 0 0 34px; text-align: right; color: #aaa; font-variant-numeric: tabular-nums; }
+  .hint { margin-top: 10px; color: #a99; font-size: 11px; line-height: 1.5; }
+  kbd { background: #3a2c22; border-radius: 3px; padding: 0 4px; font: inherit; }
+  #note { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    max-width: 520px; padding: 18px 22px; background: #2a1d15; color: #f3e6da;
+    border: 1px solid #6b513d; border-radius: 10px; font-size: 15px; line-height: 1.5; }
+  #note[hidden] { display: none; }
+  #note code { background: #000; padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="note">
+  <strong>Hier läuft kein JavaScript.</strong><br>
+  Diese Vorschau zeigt nur HTML und CSS an. Bitte die Datei in Safari oder Chrome öffnen,
+  z. B. im Terminal mit<br><code>open prototype/index.html</code><br>
+  oder per Doppelklick im Finder.
+</div>
+
+<div id="panel">
+  <h1>Ägyptischer Screensaver · Prototyp</h1>
+  <div class="row"><label for="rows">Reihen</label>
+    <input id="rows" type="range" min="2" max="14" step="1" value="5"><span class="val" id="rowsV"></span></div>
+  <div class="row"><label for="spacing">Abstand</label>
+    <input id="spacing" type="range" min="0.6" max="1.6" step="0.05" value="1.05"><span class="val" id="spacingV"></span></div>
+  <div class="row"><label for="tempo">Tempo</label>
+    <input id="tempo" type="range" min="0.2" max="3" step="0.05" value="1.05"><span class="val" id="tempoV"></span></div>
+  <div class="row"><label for="pattern">Bewegung</label>
+    <select id="pattern">
+      <option value="wave">Welle</option>
+      <option value="canon">Kanon (je Reihe)</option>
+      <option value="sync">Synchron</option>
+      <option value="random">Zufällig</option>
+    </select></div>
+  <div class="row"><label for="scroll">Scrollen</label>
+    <select id="scroll">
+      <option value="off">Aus</option>
+      <option value="same" selected>Alle Reihen gleich</option>
+      <option value="alt">Abwechselnd</option>
+    </select></div>
+  <div class="row"><label for="palette">Farben</label>
+    <select id="palette">
+      <option value="rose">Sandstein rosé, grauer Boden</option>
+      <option value="olive">Ocker, grüner Boden</option>
+    </select></div>
+  <div class="row"><label for="crt">Röhren-Look</label>
+    <input id="crt" type="checkbox" checked></div>
+  <div class="row"><label for="studio">Posen-Ansicht</label>
+    <input id="studio" type="checkbox"></div>
+  <div class="hint">
+    <kbd>H</kbd> Panel ein/aus · <kbd>F</kbd> Vollbild · <kbd>Leertaste</kbd> Pause<br>
+    Das Panel blendet sich nach ein paar Sekunden ohne Mausbewegung aus.
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// JavaScript läuft: Hinweis ausblenden. Fehler werden stattdessen sichtbar angezeigt.
+const note = document.getElementById('note');
+note.hidden = true;
+addEventListener('error', e => {
+  note.hidden = false;
+  note.textContent = `Fehler im Prototyp: ${e.message} (Zeile ${e.lineno})`;
+});
+
+/* ------------------------------------------------------------------
+ * Figurenmodell
+ * Koordinaten in "Figureneinheiten": Füße bei y = 0, y wächst nach unten,
+ * Scheitel liegt etwa bei y = -97. Die Figur ist frontal dargestellt.
+ * Alle Formen sind gerade Polygone (keine Rundungen), damit der eckige
+ * Look der Vorlage entsteht.
+ *
+ * Winkel (Grad) pro Gliedmaße: [oberes Segment, Knick des unteren Segments]
+ *   0 = zeigt nach unten, 90 = waagrecht nach außen, 180 = nach oben.
+ *   Der Knick wird zum Winkel des oberen Segments addiert.
+ * Linke und rechte Seite werden gespiegelt (s = -1 / +1).
+ * ------------------------------------------------------------------ */
+const BODY = {
+  shoulderX: 11.5, shoulderY: -77,
+  upperArm: 14, foreArm: 12.5,
+  hipX: 6, hipY: -46,
+  thigh: 21, shin: 21,
+  footH: 1.6,
+};
+
+const POSES = {
+  ruhe:      { la: [12, -8],    ra: [12, -8],    ll: [8, -2],   rl: [8, -2],   lift: 0 },
+  kraft:     { la: [78, 98],    ra: [78, 98],    ll: [20, -24], rl: [20, -24], lift: 0 },
+  fluegel:   { la: [100, -10],  ra: [100, -10],  ll: [14, -8],  rl: [14, -8],  lift: 0 },
+  ka:        { la: [92, 88],    ra: [92, 88],    ll: [24, -34], rl: [24, -34], lift: 0 },
+  hocke:     { la: [70, -60],   ra: [70, -60],   ll: [48, -82], rl: [48, -82], lift: 0 },
+  sprung:    { la: [128, 30],   ra: [128, 30],   ll: [38, -75], rl: [38, -75], lift: 12 },
+  krone:     { la: [165, 60],   ra: [165, 60],   ll: [8, -2],   rl: [8, -2],   lift: 0 },
+  greifenL:  { la: [165, 5],    ra: [45, -105],  ll: [26, -14], rl: [2, 0],    lift: 0 },
+  greifenR:  { la: [45, -105],  ra: [165, 5],    ll: [2, 0],    rl: [26, -14], lift: 0 },
+};
+const SEQ = ['ruhe', 'kraft', 'fluegel', 'ka', 'hocke', 'sprung', 'kraft', 'krone',
+             'greifenL', 'kraft', 'greifenR', 'fluegel'];
+
+const COL = {
+  skin: '#94502f', line: 'rgba(45, 20, 8, .85)', wig: '#1b120d',
+  kilt: '#eaf3fd', eye: '#1b120d',
+};
+
+const PALETTES = {
+  rose:  { stone: [201, 146, 118], grain: 20, blotch: 18,
+           ground: ['#bdb79c', '#a39e84'], ledge: '#e6cfb2', ledgeHi: '#f3e3cc', ledgeLine: '#6b513d' },
+  olive: { stone: [176, 138, 98],  grain: 18, blotch: 18,
+           ground: ['#82b05e', '#5f8e44'], ledge: '#d8bf94', ledgeHi: '#ead6b0', ledgeLine: '#4e4430' },
+};
+
+// Aufteilung einer Reihe (Anteile der Reihenhöhe, von unten gemessen)
+const ROW = { groundTop: 0.13, ledgeTop: 0.04, feet: 0.075 };
+
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = t => t * t * (3 - 2 * t);
+const clamp01 = t => Math.max(0, Math.min(1, t));
+
+function lerpPose(a, b, t) {
+  const m = (x, y) => [lerp(x[0], y[0], t), lerp(x[1], y[1], t)];
+  return { la: m(a.la, b.la), ra: m(a.ra, b.ra), ll: m(a.ll, b.ll),
+           rl: m(a.rl, b.rl), lift: lerp(a.lift, b.lift, t) };
+}
+
+// Pose zu einem kontinuierlichen "Takt": pro Takt eine Pose, 35 % halten, 65 % überblenden.
+function poseAt(beat) {
+  const n = SEQ.length;
+  const k = Math.floor(beat);
+  const f = beat - k;
+  const a = POSES[SEQ[((k % n) + n) % n]];
+  const b = POSES[SEQ[(((k + 1) % n) + n) % n]];
+  return lerpPose(a, b, smooth(clamp01((f - 0.35) / 0.65)));
+}
+
+function dir(s, deg) {
+  const r = deg * Math.PI / 180;
+  return [s * Math.sin(r), Math.cos(r)];
+}
+
+function limb(s, base, l1, l2, ang) {
+  const d1 = dir(s, ang[0]);
+  const j = [base[0] + d1[0] * l1, base[1] + d1[1] * l1];
+  const d2 = dir(s, ang[0] + ang[1]);
+  return [base, j, [j[0] + d2[0] * l2, j[1] + d2[1] * l2]];
+}
+
+// Viereck entlang a→b mit Breite wa/wb; Enden um ext[0]/ext[1] verlängert,
+// damit sich die Segmente an den Gelenken eckig überlappen.
+function quad(a, b, wa, wb, ext = [0, 0]) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
+  const ux = dx / L, uy = dy / L, nx = -uy, ny = ux;
+  const a2 = [a[0] - ux * ext[0], a[1] - uy * ext[0]];
+  const b2 = [b[0] + ux * ext[1], b[1] + uy * ext[1]];
+  return [[a2[0] + nx * wa / 2, a2[1] + ny * wa / 2], [b2[0] + nx * wb / 2, b2[1] + ny * wb / 2],
+          [b2[0] - nx * wb / 2, b2[1] - ny * wb / 2], [a2[0] - nx * wa / 2, a2[1] - ny * wa / 2]];
+}
+
+function poly(g, pts) {
+  g.beginPath();
+  g.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+  g.closePath();
+}
+
+// Eine Ebene: erst alle Umrisse, dann alle Flächen. So verschwinden die
+// Umrisslinien dort, wo sich Teile derselben Ebene überlappen.
+function layer(g, shapes, outline = true) {
+  if (outline) {
+    g.strokeStyle = COL.line; g.lineWidth = 1.3;
+    for (const [pts] of shapes) { poly(g, pts); g.stroke(); }
+  }
+  for (const [pts, color] of shapes) { poly(g, pts); g.fillStyle = color; g.fill(); }
+}
+
+function armShapes(a) {
+  const [sh, el, ha] = a;
+  const dx = ha[0] - el[0], dy = ha[1] - el[1], L = Math.hypot(dx, dy) || 1;
+  const fist = [ha[0] + dx / L * 3, ha[1] + dy / L * 3];
+  return [
+    [quad(sh, el, 5.4, 4.6, [0, 2.2]), COL.skin],
+    [quad(el, ha, 4.6, 3.4, [2.2, 0]), COL.skin],
+    [quad(ha, fist, 4.2, 4.2), COL.skin],
+  ];
+}
+
+function legShapes(l, s) {
+  const [hip, kn, an] = l, FH = BODY.footH;
+  const foot = [[an[0] - s * 1.8, an[1] - 2.4], [an[0] + s * 1.8, an[1] - 2.4],
+                [an[0] + s * 6.8, an[1] + FH], [an[0] - s * 2.2, an[1] + FH]];
+  return [
+    [quad(hip, kn, 7, 5.4, [0, 2.4]), COL.skin],
+    [quad(kn, an, 5.4, 3.8, [2.4, 0]), COL.skin],
+    [foot, COL.skin],
+  ];
+}
+
+function drawFigure(g, pose, x, groundY, scale, glow) {
+  const B = BODY;
+  const arms = [-1, 1].map(s =>
+    limb(s, [s * B.shoulderX, B.shoulderY], B.upperArm, B.foreArm, s < 0 ? pose.la : pose.ra));
+  const legs = [-1, 1].map(s =>
+    limb(s, [s * B.hipX, B.hipY], B.thigh, B.shin, s < 0 ? pose.ll : pose.rl));
+
+  // Figur so verschieben, dass der tiefere Fuß den Boden berührt (minus Sprunghöhe).
+  const lowest = Math.max(legs[0][2][1], legs[1][2][1]) + B.footH;
+  const dy = -lowest - pose.lift;
+
+  g.save();
+  g.translate(x, groundY);
+  g.scale(scale, scale);
+  g.translate(0, dy);
+  g.lineJoin = 'miter'; g.miterLimit = 3;
+
+  // Beine
+  layer(g, [...legShapes(legs[0], -1), ...legShapes(legs[1], 1)]);
+
+  // Schurz: gerades Trapez bis zum Knie
+  const kilt = [[-7.5, -59], [7.5, -59], [14.5, -30], [-14.5, -30]];
+  g.save();
+  if (glow) { g.shadowColor = 'rgba(215, 232, 255, .9)'; g.shadowBlur = 5; }
+  poly(g, kilt); g.fillStyle = COL.kilt; g.fill();
+  g.restore();
+  g.strokeStyle = COL.line; g.lineWidth = 0.9; poly(g, kilt); g.stroke();
+
+  // Oberkörper (V-Form) und Hals
+  layer(g, [
+    [[[-2.4, -84], [2.4, -84], [2.4, -78], [-2.4, -78]], COL.skin],
+    [[[-7, -58], [-14, -74.5], [-12.5, -80], [12.5, -80], [14, -74.5], [7, -58]], COL.skin],
+  ]);
+
+  // Kopf frontal: Gesicht, Perücke mit seitlichen Strähnen bis zur Schulter
+  layer(g, [[[[-3.8, -91], [3.8, -91], [3.6, -85.5], [1.8, -82.6], [-1.8, -82.6], [-3.6, -85.5]], COL.skin]]);
+  layer(g, [[[[-4.4, -97.6], [4.4, -97.6], [6.6, -94.2], [7, -80.2], [3.8, -80.2], [3.8, -89.6],
+              [-3.8, -89.6], [-3.8, -80.2], [-7, -80.2], [-6.6, -94.2]], COL.wig]], false);
+  g.fillStyle = COL.eye;
+  g.fillRect(-2.6, -88.4, 1.5, 0.8);
+  g.fillRect(1.1, -88.4, 1.5, 0.8);
+
+  // Arme zuletzt (liegen vor Körper und Kopf)
+  layer(g, [...armShapes(arms[0]), ...armShapes(arms[1])]);
+  g.restore();
+}
+
+/* ------------------------------------------------------------------
+ * Szene
+ * ------------------------------------------------------------------ */
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+const S = { rows: 5, spacing: 1.05, tempo: 1.05, pattern: 'wave', scroll: 'same',
+            palette: 'rose', crt: true, studio: false };
+let W = 0, H = 0, DPR = 1, bg = null, overlay = null;
+
+// Zufallsgenerator mit festem Startwert, damit die Steintextur stabil bleibt.
+function rng(seed) {
+  return () => {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function rowCount() { return S.studio ? 2 : S.rows; }
+
+function buildBackground() {
+  if (!W || !H) return; // noch keine Größe bekannt (vor dem ersten resize)
+  const P = PALETTES[S.palette];
+  bg = document.createElement('canvas');
+  bg.width = W; bg.height = H;
+  const g = bg.getContext('2d');
+  g.fillStyle = `rgb(${P.stone.join(',')})`;
+  g.fillRect(0, 0, W, H);
+
+  const rows = rowCount(), rh = H / rows;
+  for (let r = 0; r < rows; r++) {
+    const bottom = (r + 1) * rh;
+    const gTop = bottom - rh * ROW.groundTop, lTop = bottom - rh * ROW.ledgeTop;
+    // Bodenstreifen, auf dem die Figuren stehen
+    const grad = g.createLinearGradient(0, gTop, 0, lTop);
+    grad.addColorStop(0, P.ground[0]); grad.addColorStop(1, P.ground[1]);
+    g.fillStyle = grad; g.fillRect(0, gTop, W, lTop - gTop);
+    // Sims als Trennung zur nächsten Reihe
+    g.fillStyle = P.ledge; g.fillRect(0, lTop, W, bottom - lTop);
+    g.fillStyle = P.ledgeHi; g.fillRect(0, lTop, W, Math.max(1, rh * 0.007));
+    const lw = Math.max(1, rh * 0.01);
+    g.fillStyle = P.ledgeLine; g.fillRect(0, bottom - lw, W, lw);
+  }
+
+  // Körnung + großflächige Flecken (Wertrauschen) direkt in die Pixel.
+  const rand = rng(1998);
+  const cell = Math.max(24, Math.round(Math.min(W, H) / 14));
+  const gw = Math.ceil(W / cell) + 2, gh = Math.ceil(H / cell) + 2;
+  const grid = new Float32Array(gw * gh).map(() => rand() * 2 - 1);
+  const img = g.getImageData(0, 0, W, H), d = img.data;
+  for (let y = 0; y < H; y++) {
+    const gy = y / cell, iy = gy | 0, fy = smooth(gy - iy);
+    for (let x = 0; x < W; x++) {
+      const gx = x / cell, ix = gx | 0, fx = smooth(gx - ix);
+      const a = grid[iy * gw + ix], b = grid[iy * gw + ix + 1];
+      const c = grid[(iy + 1) * gw + ix], e = grid[(iy + 1) * gw + ix + 1];
+      const blotch = lerp(lerp(a, b, fx), lerp(c, e, fx), fy) * P.blotch;
+      const n = blotch + (rand() - 0.5) * P.grain;
+      const i = (y * W + x) * 4;
+      d[i] += n; d[i + 1] += n * 0.92; d[i + 2] += n * 0.85;
+    }
+  }
+  g.putImageData(img, 0, 0);
+}
+
+function buildOverlay() {
+  if (!W || !H) return;
+  overlay = document.createElement('canvas');
+  overlay.width = W; overlay.height = H;
+  const g = overlay.getContext('2d');
+  const step = Math.max(3, Math.round(DPR * 3));
+  g.fillStyle = 'rgba(0, 0, 0, .16)';
+  for (let y = 0; y < H; y += step) g.fillRect(0, y, W, Math.max(1, step / 3));
+  const v = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.hypot(W, H) * 0.6);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.45)');
+  g.fillStyle = v; g.fillRect(0, 0, W, H);
+}
+
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  cvs.width = W; cvs.height = H;
+  buildBackground(); buildOverlay();
+}
+
+const hash = (r, c) => { const s = Math.sin(r * 127.1 + c * 311.7) * 43758.5453; return s - Math.floor(s); };
+
+function beatFor(t, r, c) {
+  const b = t * S.tempo;
+  switch (S.pattern) {
+    case 'sync':   return b;
+    case 'canon':  return b - r;
+    case 'random': return b + Math.floor(hash(r, c) * SEQ.length);
+    default:       return b - c * 0.18 - r * 0.5;
+  }
+}
+
+function drawScene(t) {
+  ctx.drawImage(bg, 0, 0);
+  const rows = rowCount(), rh = H / rows;
+  const scale = rh * 0.0077;
+
+  if (S.studio) {
+    const names = Object.keys(POSES), perRow = Math.ceil(names.length / 2);
+    ctx.font = `${Math.round(rh * 0.05)}px -apple-system, system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    names.forEach((n, i) => {
+      const r = Math.floor(i / perRow), c = i % perRow;
+      const x = (c + 0.5) * W / perRow, ground = (r + 1) * rh - rh * ROW.feet;
+      drawFigure(ctx, POSES[n], x, ground, scale, S.crt);
+      ctx.fillStyle = 'rgba(60, 30, 15, .85)';
+      ctx.fillText(n, x, r * rh + rh * 0.07);
+    });
+  } else {
+    const spacing = rh * S.spacing;
+    for (let r = 0; r < rows; r++) {
+      const ground = (r + 1) * rh - rh * ROW.feet;
+      let off = 0;
+      if (S.scroll !== 'off') {
+        const dirn = S.scroll === 'alt' && r % 2 ? -1 : 1;
+        off = dirn * t * spacing * 0.3;
+      }
+      const first = Math.floor(-off / spacing) - 1;
+      const last = Math.ceil((W - off) / spacing) + 1;
+      for (let c = first; c <= last; c++) {
+        const x = c * spacing + off + spacing / 2;
+        drawFigure(ctx, poseAt(beatFor(t, r, c)), x, ground, scale, S.crt);
+      }
+    }
+  }
+  if (S.crt) ctx.drawImage(overlay, 0, 0);
+}
+
+let paused = false, last = performance.now(), clock = 0;
+function frame(now) {
+  if (!paused) clock += (now - last) / 1000;
+  last = now;
+  drawScene(clock);
+  requestAnimationFrame(frame);
+}
+
+/* ------------------------------------------------------------------
+ * Bedienung
+ * ------------------------------------------------------------------ */
+const $ = id => document.getElementById(id);
+const panel = $('panel');
+function bindRange(id, key, fmt, rebuild) {
+  const el = $(id), out = $(id + 'V');
+  const upd = () => { S[key] = parseFloat(el.value); out.textContent = fmt(S[key]); if (rebuild) buildBackground(); };
+  el.addEventListener('input', upd); upd();
+}
+bindRange('rows', 'rows', v => v, true);
+bindRange('spacing', 'spacing', v => v.toFixed(2));
+bindRange('tempo', 'tempo', v => v.toFixed(2));
+// Auswahlfelder und Häkchen: Wert sofort übernehmen (der Browser stellt beim
+// Neuladen alte Werte wieder her, ohne ein change-Ereignis auszulösen) und bei
+// jeder Änderung aktualisieren.
+function bindSelect(id, key, rebuild) {
+  const el = $(id);
+  const upd = () => { if (el.value) S[key] = el.value; if (rebuild) buildBackground(); };
+  el.addEventListener('change', upd); upd();
+}
+function bindCheck(id, key, rebuild) {
+  const el = $(id);
+  const upd = () => { S[key] = !!el.checked; if (rebuild) buildBackground(); };
+  el.addEventListener('change', upd); upd();
+}
+bindSelect('pattern', 'pattern');
+bindSelect('scroll', 'scroll');
+bindSelect('palette', 'palette', true);
+bindCheck('crt', 'crt');
+bindCheck('studio', 'studio', true);
+
+let hideTimer = 0, pinned = true;
+function poke() {
+  if (!pinned) return;
+  panel.classList.remove('hidden');
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => { if (!panel.matches(':hover')) panel.classList.add('hidden'); }, 3500);
+}
+addEventListener('mousemove', poke);
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT') return;
+  if (e.key === 'h' || e.key === 'H') { pinned = !pinned; panel.classList.toggle('hidden', !pinned); }
+  else if (e.key === 'f' || e.key === 'F') {
+    document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  } else if (e.key === ' ') { paused = !paused; e.preventDefault(); }
+});
+
+let resizeTimer = 0;
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, 150); });
+resize(); poke();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
